@@ -1,3 +1,5 @@
+#!/usr/bin/env lua
+
 local nl_to_en = {
 	["^importeer (.*.) als (%w+)$"] = "import %1 as %2",
 	["(%s+)importeer (.*.) als (%w+)$"] = "%1import %2 as %3",
@@ -11,9 +13,9 @@ local nl_to_en = {
 	["(%s+)of(%s+)"] = "%1or%2",
 	["(%s+)verwacht(%s+)"] = "%1await%2",
 	["(%s+)voor(%s+)"] = "%1for%2",
-	["([%s*|,])Geen"] = "%1None",
-	["([%s*|,])Onwaar"] = "%1False",
-	["([%s*|,])Waar"] = "%1True",
+	["([%s*,])Geen"] = "%1None",
+	["([%s*,])Onwaar"] = "%1False",
+	["([%s*,])Waar"] = "%1True",
 	["^(%s*)als(%s+)"] = "%1if%2",
 	["^(%s*)andersals(%s+)"] = "%1elif%2",
 	["^(%s*)async(%s+)"] = "%1async%2",
@@ -29,12 +31,12 @@ local nl_to_en = {
 	["^(%s*)nietlokaal(%s+)"] = "%1nonlocal%2",
 	["^(%s*)overeenkomst(%s+)"] = "%1match%2",
 	["^(%s*)pass(%s+)"] = "%1pas%2",
-	["^(%s*)probeer(%s+)"] = "%1try%2",
+	["^(%s*)probeer([%s+:])"] = "%1try%2",
 	["^(%s*)retourneer(%s+)"] = "%1return%2",
 	["^(%s*)tenslotte(%s+)"] = "%1finally%2",
 	["^(%s*)terwijl(%s+)"] = "%1while%2",
 	["^(%s*)uitgezonderd(%s+)"] = "%1except%2",
-	["^(%s*)uitgezonderd(%s+)als"] = "%1except%2as",
+	["^(%s*)uitgezonderd (%w+) als"] = "%1except %2 as",
 	["^(%s*)van(%s+)"] = "%1from%2",
 	["^(%s*)verbreek(%s+)"] = "%1break",
 	["^(%s*)wis(%s+)"] = "%1del%2",
@@ -52,9 +54,9 @@ local en_to_nl = {
 	["(%s+)lambda(%s+)"] = "%1lambda%2",
 	["(%s+)not(%s+)"] = "%1niet%2",
 	["(%s+)or(%s+)"] = "%1of%2",
-	["([%s*|,])False"] = "%1Onwaar",
-	["([%s*|,])None"] = "%1Geen",
-	["([%s*|,])True"] = "%1Waar",
+	["([%s*,])False"] = "%1Onwaar",
+	["([%s*,])None"] = "%1Geen",
+	["([%s*,])True"] = "%1Waar",
 	["^(%s*)assert(%s+)"] = "%1beweer%2",
 	["^(%s*)async(%s+)"] = "%1async%2",
 	["^(%s*)break(%s+)"] = "%1verbreek%2",
@@ -65,7 +67,7 @@ local en_to_nl = {
 	["^(%s*)elif(%s+)"] = "%1andersals%2",
 	["^(%s*)else(%s+:)"] = "%1anders%2",
 	["^(%s*)except(%s+)"] = "%1uitgezonderd%2",
-	["^(%s*)except(%s+)as"] = "%1uitgezonderd%2als",
+	["^(%s*)except (%w+) as"] = "%1uitgezonderd %2 als",
 	["^(%s*)finally(%s+)"] = "%1tenslotte%2",
 	["^(%s*)for(%s+)"] = "%1voor%2",
 	["^(%s*)from(%s+)"] = "%1van%2",
@@ -76,7 +78,7 @@ local en_to_nl = {
 	["^(%s*)pas(%s+)"] = "%1pass%2",
 	["^(%s*)raise(%s+)"] = "%1lever%2",
 	["^(%s*)return(%s+)"] = "%1retourneer%2",
-	["^(%s*)try(%s+)"] = "%1probeer%2",
+	["^(%s*)try([:%s+])"] = "%1probeer%2",
 	["^(%s*)while(%s+)"] = "%1terwijl%2",
 	["^(%s*)with (%w+) as (%w+)"] = "%1met %2 als :%3",
 	["^(%s*)yield(%s+)(.*.)"] = "%1lever%2op%3",
@@ -117,18 +119,37 @@ local function reverse(input)
 	return table.concat(lines, "\n")
 end
 
+local function is_dir(file_name)
+	local command = "cd '" .. file_name .. "'"
+	if package.config:sub(1, 1) == "\\" then -- if OS is windows
+		command = command .. " > nul 2>&1"
+	else
+		command = command .. " > /dev/null 2>&1"
+	end
+
+	if os.execute(command) then -- If target_loc is a directory
+		return true
+	else
+		return false
+	end
+end
+
 local function set_args()
+	local help_message = [[Usage:
+    pynl <file1> <file2>...		--	Compiles (or reverses) given files
+    pynl run <file1> 			--	Compile and run file1 and don't save output
+    pynl (--output  | -o) <output>	--	Specify output file/folder
+    pynl (--verbose | -v)		--	Prints file output
+    pynl (--reverse | -r)		--	Decompiles, from English to Dutch
+    pynl (--help    | -h)		--	Show this dialogue]]
 	local args = {
 		should_reverse = false,
 		should_verbose = false,
 		should_run = arg[1] == "run",
-		files = {},
+		source_files = {},
+		source_dirs = {},
 		target_loc = nil,
 	}
-
-	if args.should_run then
-		table.remove(arg, 1)
-	end
 
 	for i, value in ipairs(arg) do
 		if value == "-r" or value == "--reverse" then
@@ -136,18 +157,36 @@ local function set_args()
 		elseif value == "-v" or value == "--verbose" then
 			args.should_verbose = true
 		elseif value == "-h" or value == "--help" then
-			print([[Usage:
-	pynl <file1> <file2>...		--	Compiles (or reverses) given files
-	pynl run <file1> 			--	Compile and run file1 and don't save output
-	pynl (--output  | -o) <output>	--	Specify output file/folder
-	pynl (--verbose | -v)		--	Prints file output
-	pynl (--reverse | -r)		--	Decompiles, from English to Dutch
-	pynl ( | -r)		--	Decompiles, from English to Dutch
-	pynl (--help    | -h)		--	Show this dialogue]])
+			print(help_message)
 		elseif value == "-o" or value == "--output" then
 			args.target_loc = arg[i + 1]
 		else
-			table.insert(args.files, value)
+			if is_dir(value) then
+				table.insert(args.source_dirs, value)
+			else
+				table.insert(args.source_files, value)
+			end
+		end
+	end
+
+	if #arg == 0 then
+		print("Error: please provide arguments")
+		print(help_message)
+		os.exit(1)
+	elseif #arg == 1 and args.should_run then
+		print(Colors.Red .. "Error: need file name" .. Colors.Reset)
+		os.exit(1)
+	end
+
+	if args.should_run and args.should_reverse then
+		print(Colors.Red .. "Error: `--reverse` and `--run` are mutually exclusive" .. Colors.Reset)
+		os.exit(1)
+	end
+
+	-- add source_dirs to source_files
+	for _, dir in ipairs(args.source_dirs) do
+		for _, file in require("lfs").dir(dir) do
+			args.source_files:insert(dir .. "/" .. file)
 		end
 	end
 
@@ -162,17 +201,8 @@ local function main()
 	}
 
 	local args = set_args()
-	if #arg == 1 and args.should_run then
-		print(Colors.Red .. "Error: need file name" .. Colors.Reset)
-		os.exit(1)
-	end
 
-	if args.should_run and args.should_reverse then
-		print(Colors.Red .. "Error: `--reverse` and `--run` are mutually exclusive" .. Colors.Reset)
-		os.exit(1)
-	end
-
-	for _, input_name in pairs(args.files) do
+	for _, input_name in pairs(args.source_files) do
 		input.name = input_name
 
 		input.handle = io.open(input.name, "r")
@@ -187,7 +217,7 @@ local function main()
 		}
 
 		if args.target_loc then
-			if os.execute("cd '" .. args.target_loc .. "'") then -- If target_loc is a directory
+			if is_dir(args.target_loc) then
 				output.name = input.name:gsub("(.*.)\\.$", args.target_loc .. "/%1")
 			else
 				output.name = args.target_loc
@@ -213,6 +243,7 @@ local function main()
 				print(Colors.Yellow .. "Warning: did you pass a python file to the pynl compiler?" .. Colors.Reset)
 			end
 		end
+
 		output.handle = io.open(output.name, "w") -- Maybe todo: check for file already exists
 		assert(output.handle, Colors.Red .. "Error: failed to create " .. output.name .. Colors.Reset)
 		output.handle:write(output.content)
@@ -242,7 +273,7 @@ local function main()
 				os.remove(output.name)
 			end
 		else
-			print("Reversed " .. input_name .. "successfully")
+			print("Reversed " .. input_name .. " successfully")
 		end
 		output.handle:close()
 	end
